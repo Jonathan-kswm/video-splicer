@@ -1,3 +1,5 @@
 /Ollama_testing/
 
 .env
+
+".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv"
