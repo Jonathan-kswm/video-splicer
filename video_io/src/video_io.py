@@ -35,6 +35,7 @@ class VideoIO:
         self.temp_dir = TEMP_DIR
         self.paths = []
         self.frames = []
+        self.output_path = None
 
     def find_video_files(self, refresh=False):
         """Scan the input directory for video files, cache the result on
@@ -114,7 +115,54 @@ class VideoIO:
     def load_video(self):... # this will run the above
 
 
-    def create_video(self):... # This will add the frames together
+    def create_video(self, output_name="stitched.mp4", fps=None, image_format="png"):
+        """Stitch the frames in the temp directory back into a single video
+        written to the output directory.
+
+        Frames are read in filename order (frame_000000, frame_000001, ...),
+        which is the continuous sequence get_video_frames() writes, so the
+        input videos come out spliced end to end.
+
+        fps: output frame rate. If None it is taken from the first input
+        video (via moviepy), so a straight extract-then-restitch keeps the
+        original timing.
+
+        Returns the path to the written video (also cached on
+        self.output_path).
+        """
+        pattern = self.temp_dir / f"frame_%06d.{image_format}"
+        if not any(self.temp_dir.glob(f"frame_*.{image_format}")):
+            raise FileNotFoundError(
+                f"No frames found in {self.temp_dir}. Run get_video_frames() first."
+            )
+
+        if fps is None:
+            video_paths = self.find_video_files()
+            if not video_paths:
+                raise ValueError(
+                    "Cannot infer fps: no input videos found. Pass fps explicitly."
+                )
+            with VideoFileClip(video_paths[0]) as clip:
+                fps = clip.fps
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = self.output_dir / output_name
+
+        command = [
+            FFMPEG_EXE, "-nostdin", "-loglevel", "error", "-y",
+            "-framerate", str(fps),
+            "-i", str(pattern),
+            # Pad to even dimensions; yuv420p + libx264 need width/height % 2 == 0.
+            "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            str(output_path),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise IOError(f"ffmpeg failed:\n{result.stderr.strip()}")
+
+        self.output_path = output_path
+        return str(output_path)
 
 class AudioIO: ...
 
