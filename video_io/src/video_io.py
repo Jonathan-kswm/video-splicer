@@ -2,9 +2,18 @@
 from moviepy import VideoFileClip
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from PIL import Image
 import cv2
+
+# Prefer the ffmpeg binary that ships with imageio-ffmpeg (a moviepy
+# dependency) so frame extraction does not depend on a system install.
+try:
+    import imageio_ffmpeg
+    FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    FFMPEG_EXE = "ffmpeg"
 # What we want to do is split multiple files into frames, combine the frames
 # Then layer over the audio
 
@@ -62,6 +71,11 @@ class VideoIO:
 
         The temp directory is wiped first so the sequence is always clean.
         Returns (and caches on self.frames) the ordered list of frame paths.
+
+        Frames are extracted by shelling out to ffmpeg rather than reading
+        with OpenCV: OpenCV's frame-by-frame decode can stop early on some
+        builds/codecs (returning fewer frames than the video contains),
+        whereas ffmpeg decodes every frame deterministically.
         """
         video_paths = self.find_video_files()
 
@@ -72,23 +86,25 @@ class VideoIO:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
         frame_paths = []
-        index = 0
         for video_path in video_paths:
-            capture = cv2.VideoCapture(str(video_path))
-            if not capture.isOpened():
-                capture.release()
-                raise IOError(f"Could not open video: {video_path}")
+            # -start_number continues the shared sequence; -fps_mode passthrough
+            # keeps every source frame (no dup/drop to hit a target rate).
+            command = [
+                FFMPEG_EXE, "-nostdin", "-loglevel", "error",
+                "-i", str(video_path),
+                "-start_number", str(len(frame_paths)),
+                "-fps_mode", "passthrough",
+                str(self.temp_dir / f"frame_%06d.{image_format}"),
+            ]
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise IOError(
+                    f"ffmpeg failed on {video_path}:\n{result.stderr.strip()}"
+                )
 
-            while True:
-                ok, frame = capture.read()
-                if not ok:
-                    break
-                frame_path = self.temp_dir / f"frame_{index:06d}.{image_format}"
-                cv2.imwrite(str(frame_path), frame)
-                frame_paths.append(str(frame_path))
-                index += 1
-
-            capture.release()
+            # Newly written frames are everything not already accounted for.
+            written = sorted(self.temp_dir.glob(f"frame_*.{image_format}"))
+            frame_paths.extend(str(p) for p in written[len(frame_paths):])
 
         self.frames = frame_paths
         return self.frames
